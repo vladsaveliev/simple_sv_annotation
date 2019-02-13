@@ -29,14 +29,14 @@ Current scheme with priority 1(high)-3(low)
       - other:
          - one or two genes on prioritisation gene list (2)
          - neither gene on prioritisationgene list (3)
-    - unpaired (hits one gene)
+   - unpaired (hits one gene)
        - on prioritisation gene list (2)
        - others (3)
-- upstream or downstream of prioritisation gene list genes (3)
+- upstream or downstream
+   - on prioritisation gene list genes (3)
 - HIGH impact
-   - on prioritisation gene list genes (2)
-   - other (3)
-- other variants (4)
+   - on prioritisation gene list genes (3)
+- other (4)
 - missing ANN or SVTYPE: "MissingAnn" in FILTER (4)
 
 Populates:
@@ -128,6 +128,10 @@ def simplify_ann(record, exon_nums, known_fusions, known_promiscuous, prioritise
     simple_annos = []
     svtype = record.INFO['SVTYPE']
 
+    lofs = record.INFO.get('LOF', [])  # (GRK7|ENSG00000114124|1|1.00),(DRD3|ENSG00000151577|4|1.00),...
+    lof_by_gene = {l.strip('(').strip(')').split('|')[0]: l for l in lofs}
+    simple_lofs = []
+
     for anno in record.INFO.get('ANN', []):
         anno_fields = anno.split('|')
         # T|splice_acceptor_variant&splice_region_variant&intron_variant|HIGH|NCOA1|ENSG00000084676|transcript|ENST00000348332|
@@ -164,23 +168,23 @@ def simplify_ann(record, exon_nums, known_fusions, known_promiscuous, prioritise
                     var_priority = 2
                     var_detail = "ON_PRIORITY_LIST"
 
-            elif "downstream_gene_variant" in effects or "upstream_gene_variant" in effects:
-                # get SVs affecting prioritised genes or regions up/downstream of them
-                if any(g in prioritised_genes for g in genes):
+            elif any(g in prioritised_genes for g in genes):
+                if gene in lof_by_gene:
                     var_priority = 3
                     var_detail = "ON_PRIORITY_LIST"
-                else:
-                    var_priority = 4
+                    simple_lofs.append(gene)
 
-            elif impact == "HIGH":
-                if any(g in prioritised_genes for g in genes):
-                    var_priority = 2
-                    var_detail = "ON_PRIORITY_LIST"
-                else:
+                elif "downstream_gene_variant" in effects or "upstream_gene_variant" in effects:
+                    # get SVs affecting prioritised genes or regions up/downstream of them
                     var_priority = 3
+                    var_detail = "ON_PRIORITY_LIST"
+
+                elif impact == "HIGH":
+                    var_priority = 3
+                    var_detail = "ON_PRIORITY_LIST"
 
             if var_priority < 4:
-                simple_annos.append([record.INFO['SVTYPE'], effect, gene, featureid, var_detail, var_priority, impact])
+                simple_annos.append([svtype, effect, gene, featureid, var_detail, var_priority, impact])
                 sv_best_tier = min(var_priority, sv_best_tier)
 
     if len(exon_losses_by_tid) > 0:
@@ -191,7 +195,12 @@ def simplify_ann(record, exon_nums, known_fusions, known_promiscuous, prioritise
 
     if simple_annos:
         record.INFO['SIMPLE_ANN'] = ['|'.join(map(str, a)) for a in simple_annos]
+
     record.INFO['SV_HIGHEST_TIER'] = sv_best_tier
+    if simple_lofs:
+        record.INFO['LOF'] = ','.join(simple_lofs)
+    elif 'LOF' in record.INFO:
+        del record.INFO['LOF']
 
     return record
 
