@@ -40,6 +40,7 @@ See the provided README.md file for more information
 
 from __future__ import print_function
 import argparse, os, vcf, sys
+from collections import defaultdict
 try:
     import pysam
 except ImportError:
@@ -116,41 +117,44 @@ def simplify_ann(record, exon_nums, known_fusions, known_promiscuous, prioritise
 
     # to-do: CNV and INS?
 
-    exon_losses = {}
-    annotated = False
-    is_intergenic = True # is intergenic or otherwise likely rubbish?
+    exon_losses = defaultdict(list)
+    is_intergenic = True  # is intergenic or otherwise likely rubbish?
     record.INFO['SV_HIGHEST_TIER'] = 3
-    for i in record.INFO['ANN']:
+
+    for i in record.INFO.get('ANN', []):
         ann_a = i.split('|')
-        if "exon_loss_variant" in ann_a[1]:
+        # T|splice_acceptor_variant&splice_region_variant&intron_variant|HIGH|NCOA1|ENSG00000084676|transcript|ENST00000348332|protein_coding|4/20|c.257-52_257-2delTGGAAATAAGCTCTTTTCAGATATGTGATTTTTTTAAGTTTCTTTATTATA||||||INFO_REALIGN_3_PRIME,
+        allele, effect, impact, gene, geneid, feature, featureid, biotype, rank, c_change, p_change = ann_a[:11]
+        effects = effect.split('&')
+        genes = gene.split('&')
+        if "exon_loss_variant" in effects:
             is_intergenic = False
-            try:
-                exon_losses[ann_a[6]].append(i)
-            except KeyError:
-                exon_losses[ann_a[6]] = [i]
-        elif "gene_fusion" in ann_a[1] or "downstream" in ann_a[1] or "upstream" in ann_a[1]: 
+            exon_losses[featureid].append(i)
+        elif "gene_fusion" in effects or "bidirectional_gene_fusion" in effects:
             # This could be 'gene_fusion', 'bidirectional_gene_fusion' but not 'feature_fusion'
-            # 'gene_fusion' could lead to a coding fusion whereas 
+            # 'gene_fusion' could lead to a coding fusion whereas
             # 'bidirectional_gene_fusion' is likely non-coding (opposing frames, _if_ inference correct)
-            annotate_other_var(record, ann_a, known_fusions, known_promiscuous, prioritised_genes)
-            annotated = True
+            annotate_fusion(record, genes, effect, featureid, known_fusions, known_promiscuous, prioritised_genes)
             is_intergenic = False
-        elif "downstream" in ann_a[1] or "upstream" in ann_a[1]:
-            # get SVs affecting up/downstream regions of prioritised genes
-            if len(ann_a[3]) > 0 and ann_a[3] in prioritised_genes:
+        else:
+            if any(g in prioritised_genes for g in genes):
                 var_priority = "3"
                 var_detail = "ON_PRIORITY_LIST"
-                simple_ann = "%s|%s|%s|%s|%s|%s" % (record.INFO['SVTYPE'], ann_a[1].upper(), ann_a[3], ann_a[6], var_detail, var_priority)
-                try:
-                    if simple_ann not in record.INFO['SIMPLE_ANN']: # avoid duplicate entries that bloat the output
-                        record.INFO['SIMPLE_ANN'].append(simple_ann)
-                except KeyError:
-                    record.INFO['SIMPLE_ANN'] = [simple_ann]
-                annotated = True
-                is_intergenic = False
+                if impact == "HIGH" or "downstream_gene_variant" in effects or "upstream_gene_variant" in effects:
+                    # get SVs affecting prioritised genes or regions up/downstream of them
+                    simple_ann = "|".join([record.INFO['SVTYPE'], effect, gene, featureid, var_detail, var_priority])
+                    try:
+                        if simple_ann not in record.INFO['SIMPLE_ANN']:  # avoid duplicate entries that bloat the output
+                            record.INFO['SIMPLE_ANN'].append(simple_ann)
+                    except KeyError:
+                        record.INFO['SIMPLE_ANN'] = [simple_ann]
+                    annotated = True
+                    is_intergenic = False
+
     if len(exon_losses) > 0:
         annotate_exon_loss(record, exon_losses, exon_nums, prioritised_genes)
         annotated = True
+
     # Add filter for purely intergenic events and other nuisance variants
     if is_intergenic:
         record.FILTER.append("Intergenic")
@@ -223,34 +227,37 @@ def annotate_exon_loss(record, exon_losses, exon_nums, prioritised_genes):
                 deleted_exons = "Exon"+str(min(exons))+"-"+str(max(exons))+"del"
         else:
             deleted_exons = "Exon"+str(min(exons))+"-"+str(max(exons))+"del"
-        var_priority = "2" if gene in prioritised_genes else "3"
-        if record.INFO['SV_HIGHEST_TIER'] > int(var_priority):
-            record.INFO['SV_HIGHEST_TIER'] = int(var_priority)
-        try:
-            record.INFO['SIMPLE_ANN'].append("DEL|EXON_DEL|%s|%s|%s|%s" % (gene,transcript,deleted_exons,var_priority))
-        except KeyError:
-            record.INFO['SIMPLE_ANN'] = ["DEL|EXON_DEL|%s|%s|%s|%s" % (gene,transcript,deleted_exons,var_priority)]
+        var_priority = 2 if gene in prioritised_genes else 3
 
-def annotate_other_var(record, ann_a, known_fusions, known_promiscuous, prioritised_genes):
+        record.INFO['SV_HIGHEST_TIER'] = min(var_priority, record.INFO['SV_HIGHEST_TIER'])
+        try:
+            record.INFO['SIMPLE_ANN'].append("DEL|EXON_DEL|%s|%s|%s|%s" % (gene,transcript,deleted_exons,str(var_priority)))
+        except KeyError:
+            record.INFO['SIMPLE_ANN'] = ["DEL|EXON_DEL|%s|%s|%s|%s" % (gene,transcript,deleted_exons,str(var_priority))]
+
+def annotate_fusion(record, genes, effect, featureid, known_fusions, known_promiscuous, prioritised_genes):
     """Create a simplified version of the annotation field for non-whole exon loss events
     that are likely to lead to fusions
     Regardless of sv type, the simple annotation for an intronic variant
     looks like: SIMPLE_ANN=INV|GENE_FUSION|ALK&EML4|NM_...&NM_...|KNOWN_FUSION|1
     """
-    var_priority = "3"
+    var_priority = 3
     var_detail = "NOT_PRIORITISED"
-    genes = ann_a[3].strip().split("&")
 
-    if len(genes) > 1 and ([genes[0], genes[1]] in known_fusions or [genes[1], genes[0]] in known_fusions
+    # on list of known fusions
+    if len(genes) > 1 and ((genes[0], genes[1]) in known_fusions or (genes[1], genes[0]) in known_fusions
                            or genes[0] in known_promiscuous or genes[1] in known_promiscuous):
-        var_priority = "1"
+        var_priority = 1
         var_detail = "KNOWN_FUSION"
-    elif (len(genes[0]) > 0 and genes[0] in prioritised_genes) or (len(genes) > 1 and len(genes[1])>0 and genes[1] in prioritised_genes):
+
+    # one of the genes is of interest
+    elif genes[0] in prioritised_genes or len(genes) > 1 and genes[1] in prioritised_genes:
         var_detail = "ON_PRIORITY_LIST"
-        var_priority = "2"
-    if record.INFO['SV_HIGHEST_TIER'] > int(var_priority):
-        record.INFO['SV_HIGHEST_TIER'] = int(var_priority)
-    simple_ann = "%s|%s|%s|%s|%s|%s" % (record.INFO['SVTYPE'], ann_a[1].upper(), ann_a[3], ann_a[6], var_detail, var_priority)
+        var_priority = 2
+
+    record.INFO['SV_HIGHEST_TIER'] = min(var_priority, record.INFO['SV_HIGHEST_TIER'])
+
+    simple_ann = "%s|%s|%s|%s|%s|%s" % (record.INFO['SVTYPE'], effect, '&'.join(genes), featureid, var_detail, str(var_priority))
     try:
         if simple_ann not in record.INFO['SIMPLE_ANN']: # avoid duplicate entries that bloat the output
             record.INFO['SIMPLE_ANN'].append(simple_ann)
