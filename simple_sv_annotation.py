@@ -125,12 +125,12 @@ def simplify_ann(record, exon_nums, known_fusions, known_promiscuous, prioritise
 
     exon_losses_by_tid = defaultdict(list)
     sv_best_tier = 4
-    simple_annos = []
+    simple_annos = set()
     svtype = record.INFO['SVTYPE']
 
     lofs = record.INFO.get('LOF', [])  # (GRK7|ENSG00000114124|1|1.00),(DRD3|ENSG00000151577|4|1.00),...
     lof_by_gene = {l.strip('(').strip(')').split('|')[0]: l for l in lofs}
-    simple_lofs = []
+    simple_lofs = set()
 
     for anno in record.INFO.get('ANN', []):
         anno_fields = anno.split('|')
@@ -172,7 +172,7 @@ def simplify_ann(record, exon_nums, known_fusions, known_promiscuous, prioritise
                 if gene in lof_by_gene:
                     var_priority = 3
                     var_detail = "ON_PRIORITY_LIST"
-                    simple_lofs.append(gene)
+                    simple_lofs.add(gene)
 
                 elif "downstream_gene_variant" in effects or "upstream_gene_variant" in effects:
                     # get SVs affecting prioritised genes or regions up/downstream of them
@@ -182,23 +182,26 @@ def simplify_ann(record, exon_nums, known_fusions, known_promiscuous, prioritise
                 elif impact == "HIGH":
                     var_priority = 3
                     var_detail = "ON_PRIORITY_LIST"
+                    if feature == 'interaction':
+                        featureid = featureid.split(':')[-1]
 
             if var_priority < 4:
-                simple_annos.append([svtype, effect, gene, featureid, var_detail, var_priority, impact])
+                simple_annos.add((svtype, effect, gene, featureid, var_detail, var_priority, impact))
                 sv_best_tier = min(var_priority, sv_best_tier)
 
     if len(exon_losses_by_tid) > 0:
         losses = annotate_exon_loss(record.POS, record.INFO['END'], exon_losses_by_tid, exon_nums, prioritised_genes)
         for (gene, transcriptid, deleted_exons, var_priority) in losses:
-            simple_annos.append(['DEL', 'EXON_DEL', gene, transcriptid, deleted_exons, var_priority, 'HIGH'])
+            simple_annos.add(('DEL', 'EXON_DEL', gene, transcriptid, deleted_exons, var_priority, 'HIGH'))
             sv_best_tier = min(var_priority, sv_best_tier)
 
     if simple_annos:
+        simple_annos = sorted(simple_annos)
         record.INFO['SIMPLE_ANN'] = ['|'.join(map(str, a)) for a in simple_annos]
 
     record.INFO['SV_HIGHEST_TIER'] = sv_best_tier
     if simple_lofs:
-        record.INFO['LOF'] = ','.join(simple_lofs)
+        record.INFO['LOF'] = ','.join(sorted(simple_lofs))
     elif 'LOF' in record.INFO:
         del record.INFO['LOF']
 
