@@ -19,7 +19,7 @@ Notes:
     - Soft filters intergenic events that are not involved with genes directly
 
 Current scheme with priority 1(high)-3(low)
-- exon loss 
+- exon loss
    - on prioritisation gene list (2)
    - other (3)
 - gene_fusion
@@ -28,14 +28,14 @@ Current scheme with priority 1(high)-3(low)
       - one gene is a known promiscuous fusion gene (1)
       - other:
          - one or two genes on prioritisation gene list (2)
-         - neither gene on prioritisationgene list (3)
+         - neither gene on prioritisation gene list (3)
    - unpaired (hits one gene)
        - on prioritisation gene list (2)
        - others (3)
 - upstream or downstream
-   - on prioritisation gene list genes (3)
-- HIGH impact
-   - on prioritisation gene list genes (3)
+   - on prioritisation gene list genes (2)  - e.g. one gene is got into control of another gene's promoter and get overexpressed (oncogene) or underexpressed (tsgene)
+- LOF
+   - in a tumor suppressor (3)
 - other (4)
 - missing ANN or SVTYPE: "MissingAnn" in FILTER (4)
 
@@ -139,6 +139,7 @@ def simplify_ann(record, exon_nums, known_fusions, known_promiscuous, prioritise
         allele, effect, impact, gene, geneid, feature, featureid, biotype, rank, c_change, p_change = anno_fields[:11]
         effects = effect.split('&')
         genes = gene.split('&')
+        on_priority_list = any(g in prioritised_genes for g in genes)
 
         if "exon_loss_variant" in effects:
             # collecting exon losses to process them together further for the variant
@@ -148,7 +149,9 @@ def simplify_ann(record, exon_nums, known_fusions, known_promiscuous, prioritise
             # deside of to report the annotation straigh away
             var_detail = ''
             var_priority = 4
-            if "gene_fusion" in effects or "bidirectional_gene_fusion" in effects:
+            is_fusion = any(e in effects for e in ["gene_fusion", "bidirectional_gene_fusion"])
+            is_downstream_upstream = any(e in effects for e in ["downstream_gene_variant", "upstream_gene_variant"])
+            if is_fusion:
                 # This could be 'gene_fusion', 'bidirectional_gene_fusion' but not 'feature_fusion'
                 # 'gene_fusion' could lead to a coding fusion whereas
                 # 'bidirectional_gene_fusion' is likely non-coding (opposing frames, _if_ inference correct)
@@ -164,35 +167,35 @@ def simplify_ann(record, exon_nums, known_fusions, known_promiscuous, prioritise
                     var_detail = "KNOWN_FUSION"
 
                 # one of the genes is of interest
-                elif genes[0] in prioritised_genes or len(genes) > 1 and genes[1] in prioritised_genes:
+                elif on_priority_list:
                     var_priority = 2
                     var_detail = "ON_PRIORITY_LIST"
 
-            elif any(g in prioritised_genes for g in genes):
+            elif on_priority_list:
                 if gene in lof_by_gene:
                     var_priority = 3
-                    var_detail = "ON_PRIORITY_LIST"
+                    var_detail = "ON_PRIORITY_LIST&LOF"
                     simple_lofs.add(gene)
 
-                elif "downstream_gene_variant" in effects or "upstream_gene_variant" in effects:
+                if is_downstream_upstream:
                     # get SVs affecting prioritised genes or regions up/downstream of them
-                    var_priority = 3
+                    var_priority = 2
                     var_detail = "ON_PRIORITY_LIST"
 
-                elif impact == "HIGH":
-                    var_priority = 3
-                    var_detail = "ON_PRIORITY_LIST"
-                    if feature == 'interaction':
-                        featureid = featureid.split(':')[-1]
+                # elif impact == "HIGH":
+                #     var_priority = 3
+                #     var_detail = "ON_PRIORITY_LIST"
+                #     if feature == 'interaction':
+                #         featureid = featureid.split(':')[-1]
 
             if var_priority < 4:
-                simple_annos.add((svtype, effect, gene, featureid, var_detail, var_priority, impact))
+                simple_annos.add((svtype, effect, gene, featureid, var_detail, var_priority))
                 sv_best_tier = min(var_priority, sv_best_tier)
 
     if len(exon_losses_by_tid) > 0:
         losses = annotate_exon_loss(record.POS, record.INFO['END'], exon_losses_by_tid, exon_nums, prioritised_genes)
         for (gene, transcriptid, deleted_exons, var_priority) in losses:
-            simple_annos.add(('DEL', 'EXON_DEL', gene, transcriptid, deleted_exons, var_priority, 'HIGH'))
+            simple_annos.add(('DEL', 'EXON_DEL', gene, transcriptid, deleted_exons, var_priority))
             sv_best_tier = min(var_priority, sv_best_tier)
 
     if simple_annos:
