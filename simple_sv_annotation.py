@@ -158,6 +158,7 @@ def simplify_ann(record, exon_nums, known_fusions, tier2_fusion_pairs, known_pro
             var_detail = ''
             var_priority = 4
             is_fusion = any(e in effects for e in ["gene_fusion", "bidirectional_gene_fusion"])
+            is_bidir = "bidirectional_gene_fusion" in effects
             is_downstream_upstream = any(e in effects for e in ["downstream_gene_variant", "upstream_gene_variant"])
             if is_fusion:
                 # This could be 'gene_fusion', 'bidirectional_gene_fusion' but not 'feature_fusion'
@@ -172,17 +173,21 @@ def simplify_ann(record, exon_nums, known_fusions, tier2_fusion_pairs, known_pro
                 if len(genes) > 1:
                     g1, g2 = genes[:2]
                     if (g1, g2) in known_fusions or (g2, g1) in known_fusions or g1 in known_promiscuous or g2 in known_promiscuous:
-                        var_priority = 1 if "bidirectional_gene_fusion" not in effects else 2
+                        var_priority = 1
                         var_detail = "KNOWN_FUSION"
 
                     elif (g1, g2) in tier2_fusion_pairs or (g2, g1) in tier2_fusion_pairs:
-                        var_priority = 2 if "bidirectional_gene_fusion" not in effects else 3
+                        var_priority = 2
                         var_detail = "KNOWN_FUSION"
 
                 # one of the genes is of interest
                 elif on_priority_list:
-                    var_priority = 2 if "bidirectional_gene_fusion" not in effects else 3
+                    var_priority = 2
                     var_detail = "ON_PRIORITY_LIST"
+
+                # deprioritizing potencially non-coding fusions
+                if is_bidir:
+                    var_priority += 1
 
             elif on_priority_list:
                 if gene in lof_by_gene:
