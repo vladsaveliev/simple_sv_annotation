@@ -78,21 +78,23 @@ def main(vcf_in, outfile, exon_nums, args):
     vcf_writer = vcf.Writer(open(outfile, 'w'), vcf_reader) if outfile != "-" else vcf.Writer(sys.stdout, vcf_reader)
 
     # Read in gene lists
-    known_fusions, known_promiscuous, prioritised_genes = read_gene_lists(args.known_fusion_pairs, args.known_fusion_promiscuous, args.gene_list)
+    known_fusions, tier2_fusion_pairs, known_promiscuous, prioritised_genes = read_gene_lists(
+        args.known_fusion_pairs, args.tier2_fusion_pairs, args.known_fusion_promiscuous, args.gene_list)
 
     for record in vcf_reader:
         if record.FILTER is None:
             record.FILTER = []
 
         if 'SVTYPE' in record.INFO and 'ANN' in record.INFO:
-            vcf_writer.write_record(simplify_ann(record, exon_nums, known_fusions, known_promiscuous, prioritised_genes))
+            vcf_writer.write_record(simplify_ann(record, exon_nums, known_fusions, tier2_fusion_pairs, known_promiscuous, prioritised_genes))
         else: 
             # record.FILTER.append("MissingAnn")
             vcf_writer.write_record(record)
     vcf_writer.close()
 
-def read_gene_lists(known_fusion_pairs, known_fusion_promiscuous, gene_list):
+def read_gene_lists(known_fusion_pairs, tier2_fusion_pairs, known_fusion_promiscuous, gene_list):
     known_pairs = []
+    tier2_pairs = []
     known_promiscuous = []
     gl = []
     if known_fusion_pairs and os.path.isfile(known_fusion_pairs):
@@ -101,6 +103,12 @@ def read_gene_lists(known_fusion_pairs, known_fusion_promiscuous, gene_list):
                 genes = line.strip().split(",")
                 if len(genes) == 2 and len(genes[0]) > 0 and len(genes[1]) > 0:
                     known_pairs.append([genes[0].strip(), genes[1].strip()])
+    if tier2_fusion_pairs and os.path.isfile(tier2_fusion_pairs):
+        with open(tier2_fusion_pairs, 'r') as myfhandle:
+            for line in myfhandle:
+                genes = line.strip().split(",")
+                if len(genes) == 2 and len(genes[0]) > 0 and len(genes[1]) > 0:
+                    tier2_pairs.append([genes[0].strip(), genes[1].strip()])
     if known_fusion_promiscuous and os.path.isfile(known_fusion_promiscuous):
         with open(known_fusion_promiscuous, 'r') as myfhandle:
             for line in myfhandle:
@@ -113,9 +121,9 @@ def read_gene_lists(known_fusion_pairs, known_fusion_promiscuous, gene_list):
                 gene = line.strip()
                 if len(gene) > 0:
                     gl.append(gene)
-    return known_pairs, known_promiscuous, gl
+    return known_pairs, tier2_pairs, known_promiscuous, gl
 
-def simplify_ann(record, exon_nums, known_fusions, known_promiscuous, prioritised_genes):
+def simplify_ann(record, exon_nums, known_fusions, tier2_fusion_pairs, known_promiscuous, prioritised_genes):
     """
     Find any annotations that can be simplified and call the method
     to annotate it.
@@ -161,10 +169,15 @@ def simplify_ann(record, exon_nums, known_fusions, known_promiscuous, prioritise
                 var_detail = "NOT_PRIORITISED"
 
                 # on list of known fusions
-                if len(genes) > 1 and ((genes[0], genes[1]) in known_fusions or (genes[1], genes[0]) in known_fusions
-                                       or genes[0] in known_promiscuous or genes[1] in known_promiscuous):
-                    var_priority = 1
-                    var_detail = "KNOWN_FUSION"
+                if len(genes) > 1:
+                    g1, g2 = genes[:2]
+                    if (g1, g2) in known_fusions or (g2, g1) in known_fusions or g1 in known_promiscuous or g2 in known_promiscuous:
+                        var_priority = 1
+                        var_detail = "KNOWN_FUSION"
+
+                    elif (g1, g2) in tier2_fusion_pairs or (g2, g1) in tier2_fusion_pairs:
+                        var_priority = 2
+                        var_detail = "KNOWN_FUSION"
 
                 # one of the genes is of interest
                 elif on_priority_list:
@@ -323,6 +336,7 @@ if __name__ == "__main__":
     parser.add_argument('vcf', help='VCF file with snpEff annotations')
     parser.add_argument('--gene_list', '-g', help='File with names of genes (one per line) for prioritisation', required=False, default=None)
     parser.add_argument('--known_fusion_pairs', '-k', help='File with known fusion gene pairs, one pair per line delimited by comma', required=False, default=None)
+    parser.add_argument('--tier2_fusion_pairs', '--k2', help='File with purative known fusion gene pairs, one pair per line delimited by comma', required=False, default=None)
     parser.add_argument('--known_fusion_promiscuous', '-p', help='File with known promiscuous fusion genes, one gene name per line', required=False, default=None)
     parser.add_argument('--output', '-o', help='Output file name (must not exist). Does not support bgzipped output. Use "-" for stdout. [<invcf>.simpleann.vcf]', required=False)
     parser.add_argument('--exonNums', '-e', help='List of custom exon numbers. A transcript listed in this file will be '
@@ -332,10 +346,8 @@ if __name__ == "__main__":
     if args.output:
         outfile = args.output
     else:
-        outfile = args.vcf.replace("vcf.gz","vcf").replace(".vcf", ".simpleann.vcf")
-    if os.path.exists(outfile):
-        raise IOError("Output file %s exists" % outfile)
-    exonNumDict = {} 
+        outfile = sys.stdout
+    exonNumDict = {}
     if args.exonNums:
         exonNumDict = create_exon_numDict(args.exonNums) 
     main(args.vcf, outfile, exonNumDict, args)
