@@ -78,52 +78,41 @@ def main(vcf_in, outfile, exon_nums, args):
     vcf_writer = vcf.Writer(open(outfile, 'w'), vcf_reader) if outfile != "-" else vcf.Writer(sys.stdout, vcf_reader)
 
     # Read in gene lists
-    known_fusions, tier2_fusion_pairs, known_promiscuous, prioritised_genes = read_gene_lists(
-        args.known_fusion_pairs, args.tier2_fusion_pairs, args.known_fusion_promiscuous, args.gene_list)
+    known_pairs, tier2_pairs, known_promiscuous, prio_genes, ts_genes = read_gene_lists(args)
 
     for record in vcf_reader:
         if record.FILTER is None:
             record.FILTER = []
 
         if 'SVTYPE' in record.INFO and 'ANN' in record.INFO:
-            vcf_writer.write_record(simplify_ann(record, exon_nums, known_fusions, tier2_fusion_pairs, known_promiscuous, prioritised_genes))
+            vcf_writer.write_record(simplify_ann(record, exon_nums, known_pairs, tier2_pairs,
+                                                 known_promiscuous, prio_genes, ts_genes))
         else: 
             # record.FILTER.append("MissingAnn")
             vcf_writer.write_record(record)
     vcf_writer.close()
 
-def read_gene_lists(known_fusion_pairs, tier2_fusion_pairs, known_fusion_promiscuous, gene_list):
-    known_pairs = []
-    tier2_pairs = []
-    known_promiscuous = []
-    gl = []
-    if known_fusion_pairs and os.path.isfile(known_fusion_pairs):
-        with open(known_fusion_pairs, 'r') as myfhandle:
-            for line in myfhandle:
-                genes = line.strip().split(",")
-                if len(genes) == 2 and len(genes[0]) > 0 and len(genes[1]) > 0:
-                    known_pairs.append([genes[0].strip(), genes[1].strip()])
-    if tier2_fusion_pairs and os.path.isfile(tier2_fusion_pairs):
-        with open(tier2_fusion_pairs, 'r') as myfhandle:
-            for line in myfhandle:
-                genes = line.strip().split(",")
-                if len(genes) == 2 and len(genes[0]) > 0 and len(genes[1]) > 0:
-                    tier2_pairs.append([genes[0].strip(), genes[1].strip()])
-    if known_fusion_promiscuous and os.path.isfile(known_fusion_promiscuous):
-        with open(known_fusion_promiscuous, 'r') as myfhandle:
-            for line in myfhandle:
-                gene = line.strip()
-                known_promiscuous.append(gene)
+def read_gene_lists(args):
+    def _read_list(path):
+        out_set = set()
+        if path:
+            with open(path, 'r') as myfhandle:
+                for line in myfhandle:
+                    genes = line.strip().split(",")
+                    if len(genes) == 1 and len(genes[0].strip()) > 0:
+                        out_set.add(genes[0].strip())
+                    if len(genes) == 2 and len(genes[0].strip()) > 0 and len(genes[1].strip()) > 0:
+                        out_set.add([genes[0].strip(), genes[1].strip()])
+        return out_set
 
-    if gene_list and os.path.isfile(gene_list):
-        with open(gene_list, 'r') as myghandle:
-            for line in myghandle:
-                gene = line.strip()
-                if len(gene) > 0:
-                    gl.append(gene)
-    return known_pairs, tier2_pairs, known_promiscuous, gl
+    known_pairs = _read_list(args.known_fusion_pairs)
+    tier2_pairs = _read_list(args.tier2_fusion_pairs)
+    known_promiscuous = _read_list(args.known_fusion_promiscuous)
+    gl = _read_list(args.gene_list)
+    tsgenes = _read_list(args.tumor_suppressors)
+    return known_pairs, tier2_pairs, known_promiscuous, gl, tsgenes
 
-def simplify_ann(record, exon_nums, known_fusions, tier2_fusion_pairs, known_promiscuous, prioritised_genes):
+def simplify_ann(record, exon_nums, known_pairs, tier2_pairs, known_promiscuous, prio_genes, ts_genes):
     """
     Find any annotations that can be simplified and call the method
     to annotate it.
@@ -138,18 +127,17 @@ def simplify_ann(record, exon_nums, known_fusions, tier2_fusion_pairs, known_pro
 
     lofs = record.INFO.get('LOF', [])  # (GRK7|ENSG00000114124|1|1.00),(DRD3|ENSG00000151577|4|1.00),...
     lof_by_gene = {l.strip('(').strip(')').split('|')[0]: l for l in lofs}
-    simple_lofs = set()
+    lof_genes = set(lof_by_gene.keys())
 
     for anno in record.INFO.get('ANN', []):
         anno_fields = anno.split('|')
         # T|splice_acceptor_variant&splice_region_variant&intron_variant|HIGH|NCOA1|ENSG00000084676|transcript|ENST00000348332|
         #   protein_coding|4/20|c.257-52_257-2delTGGAAATAAGCTCTTTTCAGATATGTGATTTTTTTAAGTTTCTTTATTATA||||||INFO_REALIGN_3_PRIME,
         allele, effect, impact, gene, geneid, feature, featureid, biotype, rank, c_change, p_change = anno_fields[:11]
-        effects = effect.split('&')
-        genes = gene.split('&')
-        on_priority_list = any(g in prioritised_genes for g in genes)
+        effects = set(effect.split('&'))
+        genes = set(gene.split('&'))
 
-        if "exon_loss_variant" in effects:
+        if effects & {"exon_loss_variant"}:
             # collecting exon losses to process them together further for the variant
             exon_losses_by_tid[featureid].append(anno_fields)
 
@@ -157,63 +145,47 @@ def simplify_ann(record, exon_nums, known_fusions, tier2_fusion_pairs, known_pro
             # deside of to report the annotation straigh away
             var_detail = ''
             var_priority = 4
-            is_fusion = any(e in effects for e in ["gene_fusion", "bidirectional_gene_fusion"])
-            is_bidir = "bidirectional_gene_fusion" in effects
-            is_downstream_upstream = any(e in effects for e in ["downstream_gene_variant", "upstream_gene_variant"])
-            if is_fusion:
-                # This could be 'gene_fusion', 'bidirectional_gene_fusion' but not 'feature_fusion'
-                # 'gene_fusion' could lead to a coding fusion whereas
-                # 'bidirectional_gene_fusion' is likely non-coding (opposing frames, _if_ inference correct)
-                # result_annos, tier = annotate_fusion(record, genes, effect, featureid, known_fusions, known_promiscuous,
-                #                                      prioritised_genes, tier)
-                var_priority = 3
-                var_detail = "NOT_PRIORITISED"
-
-                # on list of known fusions
-                if len(genes) > 1:
+            if effects & {"gene_fusion", "downstream_gene_variant", "upstream_gene_variant"}:
+                # This could be 'gene_fusion', but not 'bidirectional_gene_fusion' or 'feature_fusion'
+                # ('gene_fusion' could lead to a coding fusion whereas 'bidirectional_gene_fusion' is
+                # likely non-coding (opposing frames, _if_ inference correct))
+                # "downstream_gene_variant" and "upstream_gene_variant" can also turn out to be a fusion
+                # when gene A falls into control of a promoter of gene B
+                if len(genes) == 2:
                     g1, g2 = genes[:2]
-                    if (g1, g2) in known_fusions or (g2, g1) in known_fusions or g1 in known_promiscuous or g2 in known_promiscuous:
+                    if {(g1, g2), (g2, g1)} & known_pairs or {g1, g2} & known_promiscuous:
                         var_priority = 1
                         var_detail = "KNOWN_FUSION"
 
-                    elif (g1, g2) in tier2_fusion_pairs or (g2, g1) in tier2_fusion_pairs:
+                    elif {(g1, g2), (g2, g1)} & tier2_pairs:
                         var_priority = 2
                         var_detail = "KNOWN_FUSION"
 
-                # one of the genes is of interest
-                elif on_priority_list:
+                # One of the genes is of interest
+                elif genes & prio_genes:
                     var_priority = 2
-                    var_detail = "ON_PRIORITY_LIST"
+                    var_detail = "FUSION_CANCER_GENE"
 
-                # deprioritizing potencially non-coding fusions
-                if is_bidir:
-                    var_priority += 1
-
-            elif on_priority_list:
-                if gene in lof_by_gene:
+                else:
                     var_priority = 3
-                    var_detail = "ON_PRIORITY_LIST&LOF"
-                    simple_lofs.add(gene)
+                    var_detail = "UNKNOWN_FUSION"
 
-                if is_downstream_upstream:
-                    # get SVs affecting prioritised genes or regions up/downstream of them
+            if lof_genes & ts_genes:
+                if genes & prio_genes:
                     var_priority = 2
-                    var_detail = "ON_PRIORITY_LIST"
-
-                # elif impact == "HIGH":
-                #     var_priority = 3
-                #     var_detail = "ON_PRIORITY_LIST"
-                #     if feature == 'interaction':
-                #         featureid = featureid.split(':')[-1]
+                    var_detail = 'TSGENE_LOF_PRIO'
+                else:
+                    var_priority = 3
+                    var_detail = 'TSGENE_LOF'
 
             if var_priority < 4:
                 simple_annos.add((svtype, effect, gene, featureid, var_detail, var_priority))
                 sv_best_tier = min(var_priority, sv_best_tier)
 
     if len(exon_losses_by_tid) > 0:
-        losses = annotate_exon_loss(record.POS, record.INFO['END'], exon_losses_by_tid, exon_nums, prioritised_genes)
+        losses = annotate_exon_loss(record.POS, record.INFO['END'], exon_losses_by_tid, exon_nums, prio_genes)
         for (gene, transcriptid, deleted_exons, var_priority) in losses:
-            simple_annos.add(('DEL', 'EXON_DEL', gene, transcriptid, deleted_exons, var_priority))
+            simple_annos.add((svtype, 'EXON_DEL', gene, transcriptid, deleted_exons, var_priority))
             sv_best_tier = min(var_priority, sv_best_tier)
 
     if simple_annos:
@@ -221,10 +193,13 @@ def simplify_ann(record, exon_nums, known_fusions, tier2_fusion_pairs, known_pro
         record.INFO['SIMPLE_ANN'] = ['|'.join(map(str, a)) for a in simple_annos]
 
     record.INFO['SV_HIGHEST_TIER'] = sv_best_tier
-    if simple_lofs:
-        record.INFO['LOF'] = ','.join(sorted(simple_lofs))
-    elif 'LOF' in record.INFO:
+    if lof_genes:
+        record.INFO['SIMPLE_LOF'] = ','.join(sorted(lof_genes))
+
+    if 'LOF' in record.INFO:
         del record.INFO['LOF']
+    if 'ANN' in record.INFO:
+        del record.INFO['ANN']
 
     return record
 
@@ -340,6 +315,7 @@ if __name__ == "__main__":
         description = "Simplify SV annotations from snpEff to highlight exon impact. Requires the pyvcf module.")
     parser.add_argument('vcf', help='VCF file with snpEff annotations')
     parser.add_argument('--gene_list', '-g', help='File with names of genes (one per line) for prioritisation', required=False, default=None)
+    parser.add_argument('--tumor_suppressors', '--ts', help='File with names of tumor suppressor genes (one per line) to prioritize LoF events', required=False, default=None)
     parser.add_argument('--known_fusion_pairs', '-k', help='File with known fusion gene pairs, one pair per line delimited by comma', required=False, default=None)
     parser.add_argument('--tier2_fusion_pairs', '--k2', help='File with purative known fusion gene pairs, one pair per line delimited by comma', required=False, default=None)
     parser.add_argument('--known_fusion_promiscuous', '-p', help='File with known promiscuous fusion genes, one gene name per line', required=False, default=None)
