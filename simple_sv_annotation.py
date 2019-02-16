@@ -102,7 +102,7 @@ def read_gene_lists(args):
                     if len(genes) == 1 and len(genes[0].strip()) > 0:
                         out_set.add(genes[0].strip())
                     if len(genes) == 2 and len(genes[0].strip()) > 0 and len(genes[1].strip()) > 0:
-                        out_set.add([genes[0].strip(), genes[1].strip()])
+                        out_set.add((genes[0].strip(), genes[1].strip()))
         return out_set
 
     known_pairs = _read_list(args.known_fusion_pairs)
@@ -152,7 +152,7 @@ def simplify_ann(record, exon_nums, known_pairs, tier2_pairs, known_promiscuous,
                 # "downstream_gene_variant" and "upstream_gene_variant" can also turn out to be a fusion
                 # when gene A falls into control of a promoter of gene B
                 if len(genes) == 2:
-                    g1, g2 = genes[:2]
+                    g1, g2 = genes
                     if {(g1, g2), (g2, g1)} & known_pairs or {g1, g2} & known_promiscuous:
                         var_priority = 1
                         var_detail = "KNOWN_FUSION"
