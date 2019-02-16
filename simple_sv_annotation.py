@@ -72,6 +72,10 @@ def main(vcf_in, outfile, exon_nums, args):
     vcf_reader.infos['SV_HIGHEST_TIER'] = vcf.parser._Info(id="SV_HIGHEST_TIER", num=1, type="Integer",
            desc="Highest priority tier for the effects of a variant entry", source=None, version=None)
 
+    vcf_reader.infos['SIMPLE_LOF'] = vcf.parser._Info(id="SIMPLE_LOF", num=".", type="String",
+          desc="Genes affected by LOF",
+          source=None, version=None)
+
     # Add filters headers:
     # vcf_reader.filters["MissingAnn"] = vcf.parser._Filter(id="MissingAnn", desc="Rejected in SV-prioritize (missing ANN/BND)")
     # vcf_reader.filters["Intergenic"] = vcf.parser._Filter(id="Intergenic", desc="Rejected in SV-prioritize (purely intergenic, or a small event)")
@@ -143,43 +147,59 @@ def simplify_ann(record, exon_nums, known_pairs, tier2_pairs, known_promiscuous,
 
         else:
             # deside of to report the annotation straigh away
-            var_detail = ''
+            var_details = set()
             var_priority = 4
-            if effects & {"gene_fusion", "downstream_gene_variant", "upstream_gene_variant"}:
+            if effects & {"gene_fusion"}:
                 # This could be 'gene_fusion', but not 'bidirectional_gene_fusion' or 'feature_fusion'
                 # ('gene_fusion' could lead to a coding fusion whereas 'bidirectional_gene_fusion' is
                 # likely non-coding (opposing frames, _if_ inference correct))
+                if len(genes) == 2:
+                    g1, g2 = genes
+                    if {(g1, g2), (g2, g1)} & known_pairs or {g1, g2} & known_promiscuous:
+                        var_priority = 1
+                        var_details.add("KNOWN_FUSION")
+
+                    elif {(g1, g2), (g2, g1)} & tier2_pairs:
+                        var_priority = 2
+                        var_details.add("KNOWN_FUSION")
+
+                # One of the genes is of interest
+                elif genes & prio_genes:
+                    var_priority = 2
+                    var_details.add("FUSION_CANCER_GENE")
+
+                else:
+                    var_priority = 3
+                    var_details.add("UNKNOWN_FUSION")
+
+            elif effects & {"downstream_gene_variant", "upstream_gene_variant"}:
                 # "downstream_gene_variant" and "upstream_gene_variant" can also turn out to be a fusion
                 # when gene A falls into control of a promoter of gene B
                 if len(genes) == 2:
                     g1, g2 = genes
                     if {(g1, g2), (g2, g1)} & known_pairs or {g1, g2} & known_promiscuous:
-                        var_priority = 1
-                        var_detail = "KNOWN_FUSION"
+                        var_priority = 2
+                        var_details.add("KNOWN_FUSION")
 
                     elif {(g1, g2), (g2, g1)} & tier2_pairs:
-                        var_priority = 2
-                        var_detail = "KNOWN_FUSION"
+                        var_priority = 3
+                        var_details.add("KNOWN_FUSION")
 
                 # One of the genes is of interest
                 elif genes & prio_genes:
-                    var_priority = 2
-                    var_detail = "FUSION_CANCER_GENE"
-
-                else:
                     var_priority = 3
-                    var_detail = "UNKNOWN_FUSION"
+                    var_details.add("FUSION_CANCER_GENE")
 
             if lof_genes & ts_genes:
                 if genes & prio_genes:
                     var_priority = 2
-                    var_detail = 'TSGENE_LOF_PRIO'
+                    var_details.add('TSGENE_LOF_PRIO')
                 else:
                     var_priority = 3
-                    var_detail = 'TSGENE_LOF'
+                    var_details.add('TSGENE_LOF')
 
             if var_priority < 4:
-                simple_annos.add((svtype, effect, gene, featureid, var_detail, var_priority))
+                simple_annos.add((svtype, effect, gene, featureid, '&'.join(var_details), var_priority))
                 sv_best_tier = min(var_priority, sv_best_tier)
 
     if len(exon_losses_by_tid) > 0:
