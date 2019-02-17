@@ -201,7 +201,7 @@ def simplify_ann(record, exon_nums, known_pairs, tier2_pairs, known_promiscuous,
                     gene = '&'.join(genes&prio_genes)
             if genes-prio_genes:
                 if gene:
-                    gene += ','
+                    gene += '&'
                 if len(genes-prio_genes) > 2:
                     gene += f'{len(genes-prio_genes)}_other_genes'
                 else:
@@ -209,7 +209,7 @@ def simplify_ann(record, exon_nums, known_pairs, tier2_pairs, known_promiscuous,
             featureid = ''
 
         sv_top_tier = min(ann_tier, sv_top_tier)
-        simple_annos.add((svtype, effect.replace('_gene_variant', ''), gene, featureid, ann_detail, ann_tier))
+        simple_annos.add((svtype, effect, gene, featureid, ann_detail, ann_tier))
 
     if len(exon_losses_by_tid) > 0:
         losses = annotate_exon_loss(record.POS, record.INFO['END'], exon_losses_by_tid, exon_nums, prio_genes)
