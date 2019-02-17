@@ -177,7 +177,7 @@ def simplify_ann(record, exon_nums, known_pairs, tier2_pairs, known_promiscuous,
                     ann_detail = "known_pair"
 
                 elif {g1, g2} & known_promiscuous:
-                    ann_tier = 1
+                    ann_tier = 2
                     ann_detail = "known_promiscuous"
 
                 elif {(g1, g2), (g2, g1)} & tier2_pairs:
@@ -191,7 +191,7 @@ def simplify_ann(record, exon_nums, known_pairs, tier2_pairs, known_promiscuous,
 
         if ann_tier < 4:
             sv_top_tier = min(ann_tier, sv_top_tier)
-            simple_annos.add((svtype, effect, gene, featureid, ann_detail, ann_tier))
+            simple_annos.add((svtype, effect.replace('_gene_variant', ''), gene, featureid, ann_detail, ann_tier))
 
     if len(exon_losses_by_tid) > 0:
         losses = annotate_exon_loss(record.POS, record.INFO['END'], exon_losses_by_tid, exon_nums, prio_genes)
@@ -212,7 +212,7 @@ def simplify_ann(record, exon_nums, known_pairs, tier2_pairs, known_promiscuous,
             ann_tier = 3
             ann_detail = 'tsgene'
 
-        simple_annos.add((svtype, 'LOF', '&'.join(lof_genes), '', ann_detail, ann_tier))
+        simple_annos.add((svtype, 'LOF', ', '.join(lof_genes), '', ann_detail, ann_tier))
         sv_top_tier = min(ann_tier, sv_top_tier)
 
     if simple_annos:
@@ -272,7 +272,7 @@ def annotate_exon_loss(start, end, exon_loss_anno_by_tid, exon_nums, prioritised
 
     For each transcript with exon losses, find the numbers for each exon
     and create the annotation
-    Example: DEL|EXON_DEL|BLM|NM_001287247.1|Exon2-12del
+    Example: DEL|exon_loss|BLM|NM_001287247.1|exon2-12del
     """
     annos = set()
     for transcript, annotations in exon_loss_anno_by_tid.items():
@@ -288,12 +288,12 @@ def annotate_exon_loss(start, end, exon_loss_anno_by_tid, exon_nums, prioritised
             return None
         if max(exons)-min(exons)+1 == len(exons):
             if len(exons) == 1:
-                deleted_exons = "Exon"+str(exons[0])+"del"
+                deleted_exons = "exon"+str(exons[0])+"del"
             else:
-                deleted_exons = "Exon"+str(min(exons))+"-"+str(max(exons))+"del"
+                deleted_exons = "exon"+str(min(exons))+"-"+str(max(exons))+"del"
         else:
-            deleted_exons = "Exon"+str(min(exons))+"-"+str(max(exons))+"del"
-        var_priority = 2 if gene in prioritised_genes else 3
+            deleted_exons = "exon"+str(min(exons))+"-"+str(max(exons))+"del"
+        var_priority = 1 if gene in prioritised_genes else 2
 
         annos.add((gene, transcript, deleted_exons, var_priority))
 
