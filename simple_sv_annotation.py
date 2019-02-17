@@ -189,9 +189,27 @@ def simplify_ann(record, exon_nums, known_pairs, tier2_pairs, known_promiscuous,
                 ann_tier = 3
                 ann_detail = "near_key_gene"
 
-        if ann_tier < 4:
-            sv_top_tier = min(ann_tier, sv_top_tier)
-            simple_annos.add((svtype, effect.replace('_gene_variant', ''), gene, featureid, ann_detail, ann_tier))
+        # any other event
+        else:
+            ann_detail = "unprioritized"
+            ann_tier = 4
+            gene = ''
+            if genes&prio_genes:
+                if len(genes&prio_genes) > 2:
+                    gene = f'{len(genes&prio_genes)}_key_genes'
+                else:
+                    gene = '&'.join(genes&prio_genes)
+            if genes-prio_genes:
+                if gene:
+                    gene += ','
+                if len(genes-prio_genes) > 2:
+                    gene += f'{len(genes-prio_genes)}_other_genes'
+                else:
+                    gene += '&'.join(genes-prio_genes)
+            featureid = ''
+
+        sv_top_tier = min(ann_tier, sv_top_tier)
+        simple_annos.add((svtype, effect.replace('_gene_variant', ''), gene, featureid, ann_detail, ann_tier))
 
     if len(exon_losses_by_tid) > 0:
         losses = annotate_exon_loss(record.POS, record.INFO['END'], exon_losses_by_tid, exon_nums, prio_genes)
@@ -216,8 +234,8 @@ def simplify_ann(record, exon_nums, known_pairs, tier2_pairs, known_promiscuous,
         sv_top_tier = min(ann_tier, sv_top_tier)
 
     if simple_annos:
-        simple_annos = sorted(simple_annos)
         record.INFO['SIMPLE_ANN'] = ['|'.join(map(str, a)) for a in simple_annos]
+
     record.INFO['SV_TOP_TIER'] = sv_top_tier
 
     if 'ANN' in record.INFO:
