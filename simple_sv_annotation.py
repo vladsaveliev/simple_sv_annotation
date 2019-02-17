@@ -212,7 +212,7 @@ def simplify_ann(record, exon_nums, known_pairs, tier2_pairs, known_promiscuous,
             ann_tier = 3
             ann_detail = 'tsgene'
 
-        simple_annos.add((svtype, 'LOF', ', '.join(lof_genes), '', ann_detail, ann_tier))
+        simple_annos.add((svtype, 'LOF', '&'.join(lof_genes), '', ann_detail, ann_tier))
         sv_top_tier = min(ann_tier, sv_top_tier)
 
     if simple_annos:
