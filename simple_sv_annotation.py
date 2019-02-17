@@ -69,12 +69,8 @@ def main(vcf_in, outfile, exon_nums, args):
           source=None, version=None)
 
     # Add an info field for highest priority (given multiple annotations per entry):
-    vcf_reader.infos['SV_HIGHEST_TIER'] = vcf.parser._Info(id="SV_HIGHEST_TIER", num=1, type="Integer",
+    vcf_reader.infos['SV_TOP_TIER'] = vcf.parser._Info(id="SV_TOP_TIER", num=1, type="Integer",
            desc="Highest priority tier for the effects of a variant entry", source=None, version=None)
-
-    vcf_reader.infos['SIMPLE_LOF'] = vcf.parser._Info(id="SIMPLE_LOF", num=".", type="String",
-          desc="Genes affected by LOF",
-          source=None, version=None)
 
     # Add filters headers:
     # vcf_reader.filters["MissingAnn"] = vcf.parser._Filter(id="MissingAnn", desc="Rejected in SV-prioritize (missing ANN/BND)")
@@ -118,21 +114,17 @@ def read_gene_lists(args):
 
 def simplify_ann(record, exon_nums, known_pairs, tier2_pairs, known_promiscuous, prio_genes, ts_genes):
     """
-    Find any annotations that can be simplified and call the method
-    to annotate it.
+    Find any ANN or LOF annotations that can be prioritized
     """
     # marching order is: 'exon_loss_variant', fusions, others
     # to-do: CNV and INS?
 
-    exon_losses_by_tid = defaultdict(list)
-    sv_best_tier = 4
-    simple_annos = set()
     svtype = record.INFO['SVTYPE']
 
-    lofs = record.INFO.get('LOF', [])  # (GRK7|ENSG00000114124|1|1.00),(DRD3|ENSG00000151577|4|1.00),...
-    lof_by_gene = {l.strip('(').strip(')').split('|')[0]: l for l in lofs}
-    lof_genes = set(lof_by_gene.keys())
-
+    # Annotate from ANN
+    exon_losses_by_tid = defaultdict(list)
+    sv_top_tier = 4
+    simple_annos = set()
     for anno in record.INFO.get('ANN', []):
         anno_fields = anno.split('|')
         # T|splice_acceptor_variant&splice_region_variant&intron_variant|HIGH|NCOA1|ENSG00000084676|transcript|ENST00000348332|
@@ -141,85 +133,97 @@ def simplify_ann(record, exon_nums, known_pairs, tier2_pairs, known_promiscuous,
         effects = set(effect.split('&'))
         genes = set(gene.split('&'))
 
+        ann_tier = 4
+        ann_detail = ''
+
         if effects & {"exon_loss_variant"}:
             # collecting exon losses to process them together further for the variant
             exon_losses_by_tid[featureid].append(anno_fields)
 
-        else:
-            # deside of to report the annotation straigh away
-            var_details = set()
-            var_priority = 4
-            if effects & {"gene_fusion"}:
-                # This could be 'gene_fusion', but not 'bidirectional_gene_fusion' or 'feature_fusion'
-                # ('gene_fusion' could lead to a coding fusion whereas 'bidirectional_gene_fusion' is
-                # likely non-coding (opposing frames, _if_ inference correct))
-                if len(genes) == 2:
-                    g1, g2 = genes
-                    if {(g1, g2), (g2, g1)} & known_pairs or {g1, g2} & known_promiscuous:
-                        var_priority = 1
-                        var_details.add("KNOWN_FUSION")
+        elif effects & {"gene_fusion"}:
+            # This could be 'gene_fusion', but not 'bidirectional_gene_fusion' or 'feature_fusion'
+            # ('gene_fusion' could lead to a coding fusion whereas 'bidirectional_gene_fusion' is
+            # likely non-coding (opposing frames, _if_ inference correct))
+            if len(genes) == 2:
+                g1, g2 = genes
+                if {(g1, g2), (g2, g1)} & known_pairs:
+                    ann_tier = 1
+                    ann_detail = "known_pair"
 
-                    elif {(g1, g2), (g2, g1)} & tier2_pairs:
-                        var_priority = 2
-                        var_details.add("KNOWN_FUSION")
+                elif {g1, g2} & known_promiscuous:
+                    ann_tier = 1
+                    ann_detail = "known_promiscuous"
 
-                # One of the genes is of interest
-                elif genes & prio_genes:
-                    var_priority = 2
-                    var_details.add("FUSION_CANCER_GENE")
+                elif {(g1, g2), (g2, g1)} & tier2_pairs:
+                    ann_tier = 2
+                    ann_detail = "known_pair"
 
-                else:
-                    var_priority = 3
-                    var_details.add("UNKNOWN_FUSION")
+            # One of the genes is of interest
+            elif genes & prio_genes:
+                ann_tier = 2
+                ann_detail = "key_gene"
 
-            elif effects & {"downstream_gene_variant", "upstream_gene_variant"}:
-                # "downstream_gene_variant" and "upstream_gene_variant" can also turn out to be a fusion
-                # when gene A falls into control of a promoter of gene B
-                if len(genes) == 2:
-                    g1, g2 = genes
-                    if {(g1, g2), (g2, g1)} & known_pairs or {g1, g2} & known_promiscuous:
-                        var_priority = 2
-                        var_details.add("KNOWN_FUSION")
+            else:
+                ann_tier = 3
+                ann_detail = "unknown"
 
-                    elif {(g1, g2), (g2, g1)} & tier2_pairs:
-                        var_priority = 3
-                        var_details.add("KNOWN_FUSION")
+        # "downstream_gene_variant" and "upstream_gene_variant" can also turn out to be a fusion
+        # when gene A falls into control of a promoter of gene B
+        elif effects & {"downstream_gene_variant", "upstream_gene_variant"}:
+            if len(genes) == 2:
+                g1, g2 = genes
+                if {(g1, g2), (g2, g1)} & known_pairs:
+                    ann_tier = 2
+                    ann_detail = "known_pair"
 
-                # One of the genes is of interest
-                elif genes & prio_genes:
-                    var_priority = 3
-                    var_details.add("FUSION_CANCER_GENE")
+                elif {g1, g2} & known_promiscuous:
+                    ann_tier = 1
+                    ann_detail = "known_promiscuous"
 
-            if lof_genes & ts_genes:
-                if genes & prio_genes:
-                    var_priority = 2
-                    var_details.add('TSGENE_LOF_PRIO')
-                else:
-                    var_priority = 3
-                    var_details.add('TSGENE_LOF')
+                elif {(g1, g2), (g2, g1)} & tier2_pairs:
+                    ann_tier = 3
+                    ann_detail = "known_pair"
 
-            if var_priority < 4:
-                simple_annos.add((svtype, effect, gene, featureid, '&'.join(var_details), var_priority))
-                sv_best_tier = min(var_priority, sv_best_tier)
+            # One of the genes is of interest
+            elif genes & prio_genes:
+                ann_tier = 3
+                ann_detail = "near_key_gene"
+
+        if ann_tier < 4:
+            sv_top_tier = min(ann_tier, sv_top_tier)
+            simple_annos.add((svtype, effect, gene, featureid, ann_detail, ann_tier))
 
     if len(exon_losses_by_tid) > 0:
         losses = annotate_exon_loss(record.POS, record.INFO['END'], exon_losses_by_tid, exon_nums, prio_genes)
-        for (gene, transcriptid, deleted_exons, var_priority) in losses:
-            simple_annos.add((svtype, 'EXON_DEL', gene, transcriptid, deleted_exons, var_priority))
-            sv_best_tier = min(var_priority, sv_best_tier)
+        for (gene, transcriptid, deleted_exons, ann_tier) in losses:
+            simple_annos.add((svtype, 'exon_loss', gene, transcriptid, deleted_exons, ann_tier))
+            sv_top_tier = min(ann_tier, sv_top_tier)
+
+    # Annotate from LOF
+    lofs = record.INFO.get('LOF', [])  # (GRK7|ENSG00000114124|1|1.00),(DRD3|ENSG00000151577|4|1.00),...
+    lof_genes = {l.strip('(').strip(')').split('|')[0] for l in lofs}
+    if lof_genes & ts_genes:
+        lof_genes = lof_genes & ts_genes
+        if lof_genes & prio_genes:
+            ann_tier = 2
+            ann_detail = 'key_tsgene'
+            lof_genes = lof_genes & prio_genes
+        else:
+            ann_tier = 3
+            ann_detail = 'tsgene'
+
+        simple_annos.add((svtype, 'LOF', '&'.join(lof_genes), '', ann_detail, ann_tier))
+        sv_top_tier = min(ann_tier, sv_top_tier)
 
     if simple_annos:
         simple_annos = sorted(simple_annos)
         record.INFO['SIMPLE_ANN'] = ['|'.join(map(str, a)) for a in simple_annos]
+    record.INFO['SV_TOP_TIER'] = sv_top_tier
 
-    record.INFO['SV_HIGHEST_TIER'] = sv_best_tier
-    if lof_genes:
-        record.INFO['SIMPLE_LOF'] = ','.join(sorted(lof_genes))
-
-    if 'LOF' in record.INFO:
-        del record.INFO['LOF']
     if 'ANN' in record.INFO:
         del record.INFO['ANN']
+    if 'LOF' in record.INFO:
+        del record.INFO['LOF']
 
     return record
 
@@ -295,23 +299,7 @@ def annotate_exon_loss(start, end, exon_loss_anno_by_tid, exon_nums, prioritised
 
     return annos
 
-# def annotate_fusion(record, genes, effect, featureid, known_fusions, known_promiscuous, prioritised_genes, tier):
-
-# UNUSED FUNCTION FOR NOW
-#def annotate_intergenic_var(record, ann_a):
-#    """Create a simplified version of the annotation field for an intergenic var
-#
-#    Regardless of sv type, the simple annotation for an intergenic variant
-#    looks like: SIMPLE_ANN=INV|INTERGENIC|LETM2-FGFR1||
-#    """
-#    simple_ann = "%s|INTERGENIC|%s||" % (record.INFO['SVTYPE'],ann_a[4])
-#    try:
-#        if simple_ann not in record.INFO['SIMPLE_ANN']: # avoid duplicate entries that bloat the output
-#            record.INFO['SIMPLE_ANN'].append(simple_ann)
-#    except KeyError:
-#        record.INFO['SIMPLE_ANN'] = [simple_ann]
-
-def create_exon_numDict(infile):
+def create_exon_num_dict(infile):
     """Create a dictionary of exon numbers based on an input file of alternate
     chromosome numberings.
 
@@ -350,5 +338,5 @@ if __name__ == "__main__":
         outfile = sys.stdout
     exonNumDict = {}
     if args.exonNums:
-        exonNumDict = create_exon_numDict(args.exonNums) 
+        exonNumDict = create_exon_num_dict(args.exonNums)
     main(args.vcf, outfile, exonNumDict, args)
