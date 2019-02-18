@@ -193,20 +193,21 @@ def simplify_ann(record, exon_nums, known_pairs, tier2_pairs, known_promiscuous,
         else:
             ann_detail = "unprioritized"
             ann_tier = 4
-            gene = ''
-            if genes&prio_genes:
-                if len(genes&prio_genes) > 2:
-                    gene = f'{len(genes&prio_genes)}_key_genes'
-                else:
-                    gene = '&'.join(genes&prio_genes)
-            if genes-prio_genes:
-                if gene:
-                    gene += '&'
-                if len(genes-prio_genes) > 2:
-                    gene += f'{len(genes-prio_genes)}_other_genes'
-                else:
-                    gene += '&'.join(genes-prio_genes)
             featureid = ''
+            gene = '&'.join(genes&prio_genes)
+            # gene = ''
+            # if genes&prio_genes:
+            #     if len(genes&prio_genes) > 2:
+            #         gene = f'{len(genes&prio_genes)}_key_genes'
+            #     else:
+            #         gene = '&'.join(genes&prio_genes)
+            # if genes-prio_genes:
+            #     if gene:
+            #         gene += '&'
+            #     if len(genes-prio_genes) > 2:
+            #         gene += f'{len(genes-prio_genes)}_other_genes'
+            #     else:
+            #         gene += '&'.join(genes-prio_genes)
 
         sv_top_tier = min(ann_tier, sv_top_tier)
         simple_annos.add((svtype, effect, gene, featureid, ann_detail, ann_tier))
