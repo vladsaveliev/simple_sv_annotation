@@ -190,6 +190,7 @@ def simplify_ann(record, exon_nums, known_pairs, tier2_pairs, known_promiscuous,
         else:
             ann_tier = 4
             featureid = ''
+            ann_detail = 'unprioritized'
             gene = '&'.join(genes&prio_genes)
             # gene = ''
             # if genes&prio_genes:
