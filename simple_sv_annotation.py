@@ -191,7 +191,6 @@ def simplify_ann(record, exon_nums, known_pairs, tier2_pairs, known_promiscuous,
 
         # any other event
         else:
-            ann_detail = "unprioritized"
             ann_tier = 4
             featureid = ''
             gene = '&'.join(genes&prio_genes)
@@ -234,9 +233,10 @@ def simplify_ann(record, exon_nums, known_pairs, tier2_pairs, known_promiscuous,
         simple_annos.add((svtype, 'LOF', '&'.join(lof_genes), '', ann_detail, ann_tier))
         sv_top_tier = min(ann_tier, sv_top_tier)
 
-    if simple_annos:
-        record.INFO['SIMPLE_ANN'] = ['|'.join(map(str, a)) for a in simple_annos]
+    if not simple_annos:
+        simple_annos = [(svtype, '', '', '', '', 4)]
 
+    record.INFO['SIMPLE_ANN'] = ['|'.join(map(str, a)) for a in simple_annos]
     record.INFO['SV_TOP_TIER'] = sv_top_tier
 
     if 'ANN' in record.INFO:
