@@ -84,12 +84,8 @@ def main(vcf_in, outfile, exon_nums, args):
         if record.FILTER is None:
             record.FILTER = []
 
-        if 'SVTYPE' in record.INFO and 'ANN' in record.INFO:
-            vcf_writer.write_record(simplify_ann(record, exon_nums, known_pairs, tier2_pairs,
-                                                 known_promiscuous, prio_genes, ts_genes))
-        else: 
-            # record.FILTER.append("MissingAnn")
-            vcf_writer.write_record(record)
+        vcf_writer.write_record(simplify_ann(record, exon_nums, known_pairs, tier2_pairs,
+                                             known_promiscuous, prio_genes, ts_genes))
     vcf_writer.close()
 
 def read_gene_lists(args):
@@ -119,13 +115,14 @@ def simplify_ann(record, exon_nums, known_pairs, tier2_pairs, known_promiscuous,
     # marching order is: 'exon_loss_variant', fusions, others
     # to-do: CNV and INS?
 
-    svtype = record.INFO['SVTYPE']
+    svtype = record.INFO.get('SVTYPE', '')
+    annos = record.INFO.get('ANN', [])
 
     # Annotate from ANN
     exon_losses_by_tid = defaultdict(list)
     sv_top_tier = 4
     simple_annos = set()
-    for anno in record.INFO.get('ANN', []):
+    for anno in annos:
         anno_fields = anno.split('|')
         # T|splice_acceptor_variant&splice_region_variant&intron_variant|HIGH|NCOA1|ENSG00000084676|transcript|ENST00000348332|
         #   protein_coding|4/20|c.257-52_257-2delTGGAAATAAGCTCTTTTCAGATATGTGATTTTTTTAAGTTTCTTTATTATA||||||INFO_REALIGN_3_PRIME,
@@ -234,7 +231,10 @@ def simplify_ann(record, exon_nums, known_pairs, tier2_pairs, known_promiscuous,
         sv_top_tier = min(ann_tier, sv_top_tier)
 
     if not simple_annos:
-        simple_annos = [(svtype, '', '', '', '', 4)]
+        simple_annos = [(svtype, '', 'unprioritized', '', '', 4)]
+
+    if not annos:
+        simple_annos = [(svtype, '', 'no_func_effect', '', '', 4)]
 
     record.INFO['SIMPLE_ANN'] = ['|'.join(map(str, a)) for a in simple_annos]
     record.INFO['SV_TOP_TIER'] = sv_top_tier
