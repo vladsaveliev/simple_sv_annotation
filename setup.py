@@ -12,7 +12,7 @@ setup(
     include_package_data=True,
     zip_safe=False,
     install_requires=['pyvcf'],
-    scripts=['simple_sv_annotation.py'],
+    scripts=['simple_sv_annotation'],
     classifiers=[
         'Environment :: Console',
         'Intended Audience :: Science/Research',
