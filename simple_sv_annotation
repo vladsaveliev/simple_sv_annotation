@@ -188,10 +188,15 @@ def simplify_ann(record, exon_nums, known_pairs, tier2_pairs, known_promiscuous,
 
         # any other event
         else:
-            ann_tier = 4
             featureid = ''
-            ann_detail = 'unprioritized'
-            gene = '&'.join(genes&prio_genes)
+            if genes & prio_genes:
+                ann_tier = 3
+                ann_detail = "key_gene"
+            else:
+                ann_tier = 4
+                ann_detail = 'unprioritized'
+                gene = '&'.join(genes&prio_genes)
+
             # gene = ''
             # if genes&prio_genes:
             #     if len(genes&prio_genes) > 2:
