@@ -1,24 +1,20 @@
 #!/usr/bin/env python
 
 """
-Name:    simple_sv_annotation.py
+Prioritizing SV annotations from SnpEff. Forked from https://github.com/AstraZeneca-NGS/simple_sv_annotation by
+    David Jenkins (david.jenkins1@astrazeneca.com/dfj@bu.edu),
+    Miika Ahdesmaki (miika.ahdesmaki @ astrazeneca.com / live.fi)
 
-Purpose: Simplify SV annotations from snpEff to highlight exon impact.
+Input:   vcf file with SVs annotated with snpEff 4.3 or higher,
+         text files with known fusions,
+         text file with genes of interest,
+         text file with tumor suppressor genes
 
-Input:   vcf file with SVs annotated with snpEff 4.3 or higher, text file with known fusion pairs, text file with genes of interest
+Output:  vcf file with tier info in INFO/SV_TOP_TIER field and simplified annotation in INFO/SIMPLE_ANN field
 
-Output:  vcf file with SV annotation field with simplified annotation
+Usage:   simple_sv_annotation [OPTIONS]
 
-Usage:   simple_sv_annotation.py [OPTIONS]
-
-Authors:  David Jenkins (david.jenkins1@astrazeneca.com/dfj@bu.edu), Miika Ahdesmaki (miika.ahdesmaki @ astrazeneca.com / live.fi)
-
-Notes:
-    - Simplified with SnpEff 4.3 updates that add better annotation for fusion events resulting from all BND/INV/DUP/DEL
-    - No simplified annotation for within-exon deletions (frameshifts, in-frame dels) as not classified as SVs
-    - Soft filters intergenic events that are not involved with genes directly
-
-Current scheme with priority 1(high)-3(low)
+Current scheme with priority 1(high)-2(moderate)-3(low)-4(no interest)
 - exon loss
    - on prioritisation gene list (2)
    - other (3)
@@ -45,80 +41,94 @@ Populates:
 
 See the provided README.md file for more information
 """
-
-from __future__ import print_function
-import argparse, os, vcf, sys
+import itertools
 from collections import defaultdict
-try:
-    import pysam
-except ImportError:
-    pysam = None
+import click
+from os.path import isfile, join
+import cyvcf2
 
-def main(vcf_in, outfile, exon_nums, args):
+from ngs_utils.reference_data import get_known_fusion_pairs, get_known_fusion_heads, get_known_fusion_tails, \
+    get_fusioncatcher_pairs, get_key_genes_txt, get_key_tsgenes_txt
+from ngs_utils.vcf_utils import add_cyvcf2_hdr
+
+from ngs_utils.utils import set_locale
+set_locale()
+
+@click.command()
+@click.argument('input_file', type=click.Path(), default='-')
+@click.option('-o', 'output_file', type=click.Path(), help='Output file name. Does not support bgzipped output. Use "-" for stdout', )
+
+def main(input_file, output_file=None):
     """
-    Adds additional header information, opens the infile for reading, opens
-    the outfile for writing, and iterates through the records to identify
-    records that are candidates for adding the simple annotation
+    Prioritizing structural variants in a VCF file annotated with SnpEff.
     """
-    vcf_reader = vcf.Reader(filename=vcf_in) if vcf_in != "-" else vcf.Reader(sys.stdin)
 
-    # add a new info field into the header of the output file:
-    vcf_reader.infos['SIMPLE_ANN'] = vcf.parser._Info(id="SIMPLE_ANN", num=".", type="String",
-          desc="Simplified human readable structural variant annotation: 'SVTYPE | ANNOTATION | GENE(s) | TRANSCRIPT | "
-               "DETAIL (exon losses, KNOWN_FUSION, ON_PRIORITY_LIST, NOT_PRIORITISED) | PRIORITY (1-3) '",
-          source=None, version=None)
+    vcf = cyvcf2.VCF(input_file or '-')
 
-    # Add an info field for highest priority (given multiple annotations per entry):
-    vcf_reader.infos['SV_TOP_TIER'] = vcf.parser._Info(id="SV_TOP_TIER", num=1, type="Integer",
-           desc="Highest priority tier for the effects of a variant entry", source=None, version=None)
+    add_cyvcf2_hdr(vcf, 'SIMPLE_ANN', '.', 'String',
+        "Simplified structural variant annotation: 'SVTYPE | EFFECT | GENE(s) | TRANSCRIPT | PRIORITY (1-4)'")
 
-    # Add filters headers:
-    # vcf_reader.filters["MissingAnn"] = vcf.parser._Filter(id="MissingAnn", desc="Rejected in SV-prioritize (missing ANN/BND)")
-    # vcf_reader.filters["Intergenic"] = vcf.parser._Filter(id="Intergenic", desc="Rejected in SV-prioritize (purely intergenic, or a small event)")
-    vcf_writer = vcf.Writer(open(outfile, 'w'), vcf_reader) if outfile != "-" else vcf.Writer(sys.stdout, vcf_reader)
+    add_cyvcf2_hdr(vcf, 'SV_TOP_TIER', '1', 'Integer',
+        "Highest priority tier for the effects of a variant entry")
+
+    w = cyvcf2.Writer(output_file or '-', vcf)
+    w.write_header()
 
     # Read in gene lists
-    known_pairs, tier2_pairs, known_promiscuous, prio_genes, ts_genes = read_gene_lists(args)
+    for rec in vcf:
+        rec = process_record(rec)
+        w.write_record(rec)
 
-    for record in vcf_reader:
-        if record.FILTER is None:
-            record.FILTER = []
 
-        vcf_writer.write_record(simplify_ann(record, exon_nums, known_pairs, tier2_pairs,
-                                             known_promiscuous, prio_genes, ts_genes))
-    vcf_writer.close()
+def _read_list(fpath):
+    out_set = set()
+    if fpath:
+        with open(fpath, 'r') as f:
+            for l in f:
+                genes = l.strip().split(",")
+                if len(genes) == 1 and len(genes[0].strip()) > 0:
+                    out_set.add(genes[0].strip())
+                if len(genes) == 2 and len(genes[0].strip()) > 0 and len(genes[1].strip()) > 0:
+                    out_set.add((genes[0].strip(), genes[1].strip()))
+    return out_set
 
-def read_gene_lists(args):
-    def _read_list(path):
-        out_set = set()
-        if path:
-            with open(path, 'r') as myfhandle:
-                for line in myfhandle:
-                    genes = line.strip().split(",")
-                    if len(genes) == 1 and len(genes[0].strip()) > 0:
-                        out_set.add(genes[0].strip())
-                    if len(genes) == 2 and len(genes[0].strip()) > 0 and len(genes[1].strip()) > 0:
-                        out_set.add((genes[0].strip(), genes[1].strip()))
-        return out_set
 
-    known_pairs = _read_list(args.known_fusion_pairs)
-    tier2_pairs = _read_list(args.tier2_fusion_pairs)
-    known_promiscuous = _read_list(args.known_fusion_promiscuous)
-    gl = _read_list(args.gene_list)
-    tsgenes = _read_list(args.tumor_suppressors)
-    return known_pairs, tier2_pairs, known_promiscuous, gl, tsgenes
+def _read_hmf_lists():
 
-def simplify_ann(record, exon_nums, known_pairs, tier2_pairs, known_promiscuous, prio_genes, ts_genes):
-    """
-    Find any ANN or LOF annotations that can be prioritized
-    """
-    # marching order is: 'exon_loss_variant', fusions, others
-    # to-do: CNV and INS?
+    # TODO: check how HMF prioritizes; check if we known order of promiscuous
 
-    svtype = record.INFO.get('SVTYPE', '')
-    annos = record.INFO.get('ANN', [])
+    known_pairs = set()
+    fus_promisc = set()
+    with open(get_known_fusion_pairs()) as f:
+        for l in f:
+            l = l.strip().replace('"', '')
+            if l:
+                g1, g2 = l.split(',')[0:2]
+                if g1 and g2 and g1 != 'H_gene':
+                    known_pairs.add((g1, g2))
+    with open(get_known_fusion_heads()) as f1, open(get_known_fusion_tails()) as f2:
+        for l in itertools.chain(f1, f2):
+            l = l.strip().replace('"', '')
+            if l:
+                gene = l.split(',')[0]
+                if gene and gene != 'gene':
+                    fus_promisc.add(gene)
 
-    # Annotate from ANN
+    return known_pairs, fus_promisc
+
+
+def process_record(rec):
+
+    svtype = rec.INFO.get('SVTYPE', '')
+    annos = rec.INFO.get('ANN', [])
+    if isinstance(annos, str):
+        annos = annos.split(',')
+
+    known_pairs, fus_promisc = _read_hmf_lists()
+    tier2_pairs = _read_list(get_fusioncatcher_pairs())
+    prio_genes = _read_list(get_key_genes_txt())
+    tsgenes = _read_list(get_key_tsgenes_txt())
+
     exon_losses_by_tid = defaultdict(list)
     sv_top_tier = 4
     simple_annos = set()
@@ -147,7 +157,7 @@ def simplify_ann(record, exon_nums, known_pairs, tier2_pairs, known_promiscuous,
                     ann_tier = 1
                     ann_detail = "known_pair"
 
-                elif {g1, g2} & known_promiscuous:
+                elif {g1, g2} & fus_promisc:
                     ann_tier = 1
                     ann_detail = "known_promiscuous"
 
@@ -173,7 +183,7 @@ def simplify_ann(record, exon_nums, known_pairs, tier2_pairs, known_promiscuous,
                     ann_tier = 2
                     ann_detail = "known_pair"
 
-                elif {g1, g2} & known_promiscuous:
+                elif {g1, g2} & fus_promisc:
                     ann_tier = 2
                     ann_detail = "known_promiscuous"
 
@@ -215,16 +225,16 @@ def simplify_ann(record, exon_nums, known_pairs, tier2_pairs, known_promiscuous,
         simple_annos.add((svtype, effect, gene, featureid, ann_detail, ann_tier))
 
     if len(exon_losses_by_tid) > 0:
-        losses = annotate_exon_loss(record.POS, record.INFO['END'], exon_losses_by_tid, exon_nums, prio_genes)
+        losses = annotate_exon_loss(exon_losses_by_tid, prio_genes)
         for (gene, transcriptid, deleted_exons, ann_tier) in losses:
             simple_annos.add((svtype, 'exon_loss', gene, transcriptid, deleted_exons, ann_tier))
             sv_top_tier = min(ann_tier, sv_top_tier)
 
     # Annotate from LOF
-    lofs = record.INFO.get('LOF', [])  # (GRK7|ENSG00000114124|1|1.00),(DRD3|ENSG00000151577|4|1.00),...
+    lofs = rec.INFO.get('LOF', [])  # (GRK7|ENSG00000114124|1|1.00),(DRD3|ENSG00000151577|4|1.00),...
     lof_genes = {l.strip('(').strip(')').split('|')[0] for l in lofs}
-    if lof_genes & ts_genes:
-        lof_genes = lof_genes & ts_genes
+    if lof_genes & tsgenes:
+        lof_genes = lof_genes & tsgenes
         if lof_genes & prio_genes:
             ann_tier = 2
             ann_detail = 'key_tsgene'
@@ -242,23 +252,20 @@ def simplify_ann(record, exon_nums, known_pairs, tier2_pairs, known_promiscuous,
     if not annos:
         simple_annos = [(svtype, '', 'no_func_effect', '', '', 4)]
 
-    record.INFO['SIMPLE_ANN'] = ['|'.join(map(str, a)) for a in simple_annos]
-    record.INFO['SV_TOP_TIER'] = sv_top_tier
+    rec.INFO['SIMPLE_ANN'] = ','.join(['|'.join(map(str, a)) for a in simple_annos])
+    rec.INFO['SV_TOP_TIER'] = sv_top_tier
 
-    if 'ANN' in record.INFO:
-        del record.INFO['ANN']
-    if 'LOF' in record.INFO:
-        del record.INFO['LOF']
+    if 'ANN' in rec.INFO:
+        del rec.INFO['ANN']
+    if 'LOF' in rec.INFO:
+        del rec.INFO['LOF']
 
-    return record
+    return rec
 
-def uniq_list(inlist):
-    """Remove unique elements from a list"""
-    inset = set(inlist)
-    return list(inset)
 
 def find_deleted_exons(annotations):
-    """Take the annotations for a particular transcript
+    """
+    Take the annotations for a particular transcript
     and parse them to find the numbers of the exons that have
     been deleted
     """
@@ -273,95 +280,31 @@ def find_deleted_exons(annotations):
             pass
     return exons, gene
 
-def find_alt_deleted_exons(start, end, exon_nums, annotations):
-    """In the case where the user has provided a file of alternate
-    transcript numbers, use those numbers to find the exons that have been
-    deleted
+
+def annotate_exon_loss(exon_loss_anno_by_tid, prioritised_genes):
     """
-    exons = []
-    gene = ''
-    for ann_fields in annotations:
-        allele, effect, impact, g, geneid, feature, featureid, biotype, rank, c_change, p_change = ann_fields[:11]
-        if gene == '':
-            gene = g
-        else:
-            break
-    for i in exon_nums:
-        if int(i[0]) > start and int(i[1]) <= end:
-            exons.append(int(i[2]))
-    return exons, gene
-
-def annotate_exon_loss(start, end, exon_loss_anno_by_tid, exon_nums, prioritised_genes):
-    """Create the exon loss simple annotation from the exon dict created
-    in simplify_ann
-
-    For each transcript with exon losses, find the numbers for each exon
-    and create the annotation
+    Create the exon loss simple annotation from the exon dict created in simplify_ann
+    For each transcript with exon losses, find the numbers for each exon and create the annotation
     Example: DEL|exon_loss|BLM|NM_001287247.1|exon2-12del
     """
+
     annos = set()
     for transcript, annotations in exon_loss_anno_by_tid.items():
-        # Remove version number if it exists
-        if transcript.split('.')[0] in exon_nums:
-            # Use alternate exon numbers for transcript
-            exons, gene = find_alt_deleted_exons(start, end, exon_nums[transcript.split('.')[0]], annotations)
-        else:
-            # se snpEff numbers for transcript
-            exons, gene = find_deleted_exons(annotations)
-        exons = uniq_list(exons)
+        exons, gene = find_deleted_exons(annotations)
+        exons = list(set(exons))
         if len(exons) == 0:
             return None
-        if max(exons)-min(exons)+1 == len(exons):
+        if max(exons) - min(exons) + 1 == len(exons):
             if len(exons) == 1:
-                deleted_exons = "exon"+str(exons[0])+"del"
+                deleted_exons = f'exon{exons[0]}del'
             else:
-                deleted_exons = "exon"+str(min(exons))+"-"+str(max(exons))+"del"
+                deleted_exons = f'exon{min(exons)}-{max(exons)}del'
         else:
-            deleted_exons = "exon"+str(min(exons))+"-"+str(max(exons))+"del"
+            deleted_exons = f'exon{min(exons)}-{max(exons)}del'
         var_priority = 1 if gene in prioritised_genes else 2
-
         annos.add((gene, transcript, deleted_exons, var_priority))
-
     return annos
 
-def create_exon_num_dict(infile):
-    """Create a dictionary of exon numbers based on an input file of alternate
-    chromosome numberings.
-
-    example: BRCA1 has no exon 4 (http://www.medscape.com/viewarticle/567639_2),
-    making exon numbers from snpEff incorrect.
-    """
-    exons = {}
-    f = open(infile)
-    for line in f:
-        la = line.rstrip("\n").split("\t")
-        name = la[3].split("|")
-        transcript = name[0]
-        if transcript in exons:
-            exons[transcript].append((la[1],la[2],name[1]))
-        else:
-            exons[transcript] = [(la[1],la[2],name[1])]
-    return exons
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description = "Simplify SV annotations from snpEff to highlight exon impact. Requires the pyvcf module.")
-    parser.add_argument('vcf', help='VCF file with snpEff annotations')
-    parser.add_argument('--gene_list', '-g', help='File with names of genes (one per line) for prioritisation', required=False, default=None)
-    parser.add_argument('--tumor_suppressors', '--ts', help='File with names of tumor suppressor genes (one per line) to prioritize LoF events', required=False, default=None)
-    parser.add_argument('--known_fusion_pairs', '-k', help='File with known fusion gene pairs, one pair per line delimited by comma', required=False, default=None)
-    parser.add_argument('--tier2_fusion_pairs', '--k2', help='File with purative known fusion gene pairs, one pair per line delimited by comma', required=False, default=None)
-    parser.add_argument('--known_fusion_promiscuous', '-p', help='File with known promiscuous fusion genes, one gene name per line', required=False, default=None)
-    parser.add_argument('--output', '-o', help='Output file name (must not exist). Does not support bgzipped output. Use "-" for stdout. [<invcf>.simpleann.vcf]', required=False)
-    parser.add_argument('--exonNums', '-e', help='List of custom exon numbers. A transcript listed in this file will be '
-                                                 'annotated with the numbers found in this file, not the numbers found in the snpEff result')
-    #parser_excl = parser.add_mutually_exclusive_group(required=False)
-    args = parser.parse_args()
-    if args.output:
-        outfile = args.output
-    else:
-        outfile = sys.stdout
-    exonNumDict = {}
-    if args.exonNums:
-        exonNumDict = create_exon_num_dict(args.exonNums)
-    main(args.vcf, outfile, exonNumDict, args)
+    main()
