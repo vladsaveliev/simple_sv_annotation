@@ -259,7 +259,7 @@ def process_record(rec):
     if not annos:
         simple_annos = [(svtype, '', 'no_func_effect', '', '', 4)]
 
-    rec.INFO['SIMPLE_ANN'] = ','.join(['|'.join(map(str, a)) for a in simple_annos])
+    rec.INFO['SIMPLE_ANN'] = ','.join(['|'.join(map(str, a)) for a in sorted(simple_annos)])
     rec.INFO['SV_TOP_TIER'] = sv_top_tier
 
     if 'ANN' in rec.INFO:
