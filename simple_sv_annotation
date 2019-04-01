@@ -151,6 +151,16 @@ def process_record(rec):
             # This could be 'gene_fusion', but not 'bidirectional_gene_fusion' or 'feature_fusion'
             # ('gene_fusion' could lead to a coding fusion whereas 'bidirectional_gene_fusion' is
             # likely non-coding (opposing frames, _if_ inference correct))
+
+            # Default tier is 2 (if hitting a prio gene) or 4
+            if genes & prio_genes:
+                ann_tier = 2
+                ann_detail = "key_gene"
+            else:
+                ann_tier = 4
+                ann_detail = "unknown"
+
+            # If exactly 2 genes, checking with the lists of known fusions:
             if len(genes) == 2:
                 g1, g2 = genes
                 if {(g1, g2), (g2, g1)} & known_pairs:
