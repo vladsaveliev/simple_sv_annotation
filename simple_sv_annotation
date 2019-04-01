@@ -196,7 +196,14 @@ def process_record(rec):
                 ann_tier = 3
                 ann_detail = "near_key_gene"
 
-        # any other event
+        elif impact == 'HIGH' and genes & tsgenes:
+            if genes & prio_genes:
+                ann_tier = 2
+                ann_detail = 'key_tsgene'
+            else:
+                ann_tier = 3
+                ann_detail = 'tsgene'
+
         else:
             featureid = ''
             if genes & prio_genes:
