@@ -204,6 +204,11 @@ def process_record(rec):
             else:
                 ann_tier = 3
                 ann_detail = 'tsgene'
+            if is_zero_cn(rec) is False:
+                ann_tier += 1
+            if is_zero_cn(rec) is True:
+                ann_detail += '_cn0'
+                ann_tier -= 1
 
         else:
             featureid = ''
@@ -251,6 +256,12 @@ def process_record(rec):
             ann_tier = 3
             ann_detail = 'tsgene'
 
+        if is_zero_cn(rec) is False:
+            ann_tier += 1
+        if is_zero_cn(rec) is True:
+            ann_detail += '_cn0'
+            ann_tier -= 1
+
         simple_annos.add((svtype, 'LOF', '&'.join(lof_genes), '', ann_detail, ann_tier))
         sv_top_tier = min(ann_tier, sv_top_tier)
 
@@ -269,6 +280,13 @@ def process_record(rec):
         del rec.INFO['LOF']
 
     return rec
+
+
+def is_zero_cn(rec):
+    cn = rec.INFO.get('PURPLE_CN')
+    if cn is not None:
+        return float(cn) <= 0.5  # real deletion
+    return None
 
 
 def find_deleted_exons(annotations):
@@ -309,7 +327,7 @@ def annotate_exon_loss(exon_loss_anno_by_tid, prioritised_genes):
                 deleted_exons = f'exon{min(exons)}-{max(exons)}del'
         else:
             deleted_exons = f'exon{min(exons)}-{max(exons)}del'
-        var_priority = 1 if gene in prioritised_genes else 2
+        var_priority = 2 if gene in prioritised_genes else 3
         annos.add((gene, transcript, deleted_exons, var_priority))
     return annos
 
