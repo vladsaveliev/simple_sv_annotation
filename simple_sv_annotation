@@ -283,9 +283,11 @@ def process_record(rec):
 
 
 def is_zero_cn(rec):
-    cn = rec.INFO.get('PURPLE_CN')
-    if cn is not None:
-        return float(cn) <= 0.5  # real deletion
+    cns = rec.INFO.get('PURPLE_CN')
+    if cns is not None:
+        if isinstance(cns, float) or isinstance(cns, int):
+            cns = [cns]
+        return any(float(cn) <= 0.5 for cn in cns)  # real deletion
     return None
 
 
