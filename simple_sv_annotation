@@ -133,11 +133,12 @@ def process_record(rec):
     simple_annos = set()
     for anno in annos:
         anno_fields = anno.split('|')
-        # T|splice_acceptor_variant&splice_region_variant&intron_variant|HIGH|NCOA1|ENSG00000084676|transcript|ENST00000348332|
+        # T|splice_acceptor_variant&splice_region_variant&intron_variant|HIGH|NCOA1|ENSG00000084676|transcript|ENST00000348332.13|
         #   protein_coding|4/20|c.257-52_257-2delTGGAAATAAGCTCTTTTCAGATATGTGATTTTTTTAAGTTTCTTTATTATA||||||INFO_REALIGN_3_PRIME,
         allele, effect, impact, gene, geneid, feature, featureid, biotype, rank, c_change, p_change = anno_fields[:11]
         effects = set(effect.split('&'))
         genes = set(gene.split('&'))
+        featureid = featureid.split('.')[0]
 
         ann_tier = 4
         ann_detail = ''
